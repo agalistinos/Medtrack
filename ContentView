@@ -1,0 +1,1177 @@
+//
+//  ContentView.swift
+//  Medtrack
+//
+//  Created by Andre Galistinos on 6/26/23.
+//
+import Foundation
+import FirebaseAuth
+import SwiftUI
+import VisionKit
+import Firebase
+import FirebaseFirestore
+import FirebaseFirestoreSwift
+import PDFKit
+import GoogleMobileAds
+
+
+struct Pill: Codable, Equatable {
+    let name: String
+    var dosage: String
+    var dosageUnit: String
+    let timesPerDay: Int
+    let times: [Date]
+    let isTakenWithFood: Bool
+}
+
+struct Appointment: Codable, Identifiable {
+    var id: String?
+    var title: String
+    var withWho: String
+    var dateTime: Date
+    var isRecurring: Bool
+    var advanceNotification: String
+    let recurringPeriod: String?
+    var futureAppointmentReminderTime: String
+}
+
+enum ActiveSheet: Identifiable {
+    case documentScanner
+    case errorAlert
+    
+    var id: Int {
+        hashValue
+    }
+}
+
+struct DocumentScannerButtonView: View {
+    @State private var activeSheet: ActiveSheet?
+    @State private var errorMessage = ""
+    @State private var showAlert = false  // State to control alert presentation
+
+    var body: some View {
+        Button(action: {
+            self.activeSheet = .documentScanner
+        }) {
+            Text("Scan Document")
+        }
+        .sheet(item: $activeSheet) { item in
+            switch item {
+            case .documentScanner:
+                DocumentScannerView(newDocumentName: .constant("New Document"),
+                                    activeSheet: $activeSheet,
+                                    errorMessage: $errorMessage)
+                    .alert(isPresented: $showAlert) {
+                        Alert(title: Text("Error"),
+                              message: Text(errorMessage),
+                              dismissButton: .default(Text("OK")) {
+                            self.activeSheet = nil
+                            self.showAlert = false
+                        })
+                    }
+                    .onChange(of: errorMessage) { newValue in
+                        if !newValue.isEmpty {
+                            showAlert = true
+                        }
+                    }
+            case .errorAlert:
+                EmptyView() // EmptyView for .errorAlert case, as we are handling alert inside .documentScanner case
+            }
+        }
+    }
+}
+
+
+struct DocumentScannerView: UIViewControllerRepresentable {
+    typealias UIViewControllerType = VNDocumentCameraViewController
+    @Binding var newDocumentName: String
+    @Binding var activeSheet: ActiveSheet?
+    @Binding var errorMessage: String
+
+    func makeUIViewController(context: UIViewControllerRepresentableContext<DocumentScannerView>) -> VNDocumentCameraViewController {
+        let viewController = VNDocumentCameraViewController()
+        viewController.delegate = context.coordinator
+        return viewController
+    }
+
+    func updateUIViewController(_ uiViewController: VNDocumentCameraViewController, context: UIViewControllerRepresentableContext<DocumentScannerView>) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(newDocumentName: $newDocumentName, activeSheet: $activeSheet, errorMessage: $errorMessage)
+    }
+
+    class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
+        @Binding var newDocumentName: String
+        @Binding var activeSheet: ActiveSheet?
+        @Binding var errorMessage: String
+
+        init(newDocumentName: Binding<String>, activeSheet: Binding<ActiveSheet?>, errorMessage: Binding<String>) {
+            _newDocumentName = newDocumentName
+            _activeSheet = activeSheet
+            _errorMessage = errorMessage
+        }
+
+        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
+            let pdfDocument = PDFDocument()
+
+            for pageIndex in 0..<scan.pageCount {
+                let image = scan.imageOfPage(at: pageIndex)
+                guard let pdfPage = PDFPage(image: image) else {
+                    self.errorMessage = "Error creating document."
+                    self.activeSheet = .errorAlert
+                    return
+                }
+                pdfDocument.insert(pdfPage, at: pageIndex)
+            }
+
+            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let fileURL = documentsDirectory.appendingPathComponent("\(newDocumentName).pdf")
+
+            // Check if the file already exists
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                self.errorMessage = "A document with this name already exists."
+                self.activeSheet = .errorAlert
+            } else {
+                let success = pdfDocument.write(to: fileURL)
+
+                if !success {
+                    self.errorMessage = "Failed to save the document."
+                    self.activeSheet = .errorAlert
+                }
+            }
+        }
+    }
+}
+
+struct Document: Identifiable {
+    let id: UUID
+    let url: URL
+}
+
+struct DocumentListView: View {
+    @State private var documents: [Document] = []
+    @State private var selectedDocument: Document?
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 200))]) {
+                    ForEach(documents) { document in
+                        DocumentCard(document: document)
+                            .onTapGesture {
+                                self.selectedDocument = document
+                            }
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Documents")
+            .onAppear {
+                loadDocumentUrls()
+            }
+            .sheet(item: $selectedDocument) { document in
+                DocumentView(document: document, documentList: $documents)
+            }
+        }
+    }
+
+    private func loadDocumentUrls() {
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        do {
+            let urls = try FileManager.default.contentsOfDirectory(at: documentsDirectory, includingPropertiesForKeys: nil)
+            documents = urls.map { Document(id: UUID(), url: $0) }
+        } catch {
+            print("Error loading documents: \(error)")
+        }
+    }
+}
+
+struct DocumentCard: View {
+    var document: Document
+
+    var body: some View {
+        VStack {
+            Image(systemName: "doc.text.fill")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 100, height: 100)
+                .padding()
+                .foregroundColor(.white)
+                .background(Color.blue)
+                .cornerRadius(20)
+                .shadow(radius: 10)
+            Text(document.url.deletingPathExtension().lastPathComponent)
+        }
+        .padding()
+        .background(Color.white)
+        .cornerRadius(20)
+        .shadow(radius: 10)
+    }
+}
+
+struct DocumentView: View {
+    let document: Document
+    @Binding var documentList: [Document]
+
+    var body: some View {
+        NavigationView {
+            PDFViewWrapper(url: document.url)
+                .navigationTitle(document.url.deletingPathExtension().lastPathComponent)
+                .navigationBarItems(trailing: Button(action: deleteDocument) {
+                    Text("Delete")
+                })
+        }
+    }
+
+    private func deleteDocument() {
+        do {
+            try FileManager.default.removeItem(at: document.url)
+            if let index = documentList.firstIndex(where: { $0.id == document.id }) {
+                documentList.remove(at: index)
+            }
+        } catch {
+            print("Error deleting document: \(error)")
+        }
+    }
+}
+
+struct PDFViewWrapper: UIViewRepresentable {
+    let url: URL
+
+    func makeUIView(context: Context) -> PDFView {
+        let pdfView = PDFView()
+        if let document = PDFDocument(url: url) {
+            pdfView.document = document
+        }
+        return pdfView
+    }
+
+    func updateUIView(_ uiView: PDFView, context: Context) {}
+}
+
+struct HomeView: View {
+    @State private var pills: [Pill] = []
+    @State private var appointments: [Appointment] = []
+    @State private var showAddPillSheet = false
+    @State private var showAddAppointmentSheet = false
+    @State private var newDocumentName: String = "ScannedDocument"
+    @State private var showAlert = false
+    @State private var errorMessage = ""
+    @State private var activeSheet: ActiveSheet?  // This is the new activeSheet state variable
+
+    @EnvironmentObject var viewModel: AuthenticationViewModel
+    @Environment(\.presentationMode) var presentationMode
+    
+    var body: some View {
+        NavigationView {
+            ZStack {
+                LinearGradient(gradient: Gradient(colors: [.blue, .purple]), startPoint: .topLeading, endPoint: .bottomTrailing)
+                    .ignoresSafeArea()
+                
+                VStack {
+                    Text("MedTrack+")
+                        .font(.largeTitle)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .padding(.bottom, 15)
+                    Text("Save all your medical information in one place")
+                        .font(.subheadline)
+                        .foregroundColor(.white)
+                        .padding(.bottom, 33)
+                    
+                    NavigationLink(destination: PillListView().environmentObject(viewModel)) {
+                        Text("Medication")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                            .padding(.horizontal)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    NavigationLink(destination: AppointmentListView()) {
+                        Text("Appointments")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                            .padding(.horizontal)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    Button(action: {
+                        self.activeSheet = .documentScanner
+                    }) {
+                        Text("Documents")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                            .padding(.horizontal)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .sheet(item: $activeSheet) { item in
+                        switch item {
+                        case .documentScanner:
+                            DocumentScannerView(newDocumentName: $newDocumentName, activeSheet: $activeSheet, errorMessage: $errorMessage)
+                                .alert(isPresented: $showAlert) {
+                                    Alert(title: Text("Error"), message: Text(errorMessage), dismissButton: .default(Text("OK")) {
+                                        self.activeSheet = nil
+                                        self.showAlert = false
+                                    })
+                                }
+                                .onChange(of: errorMessage) { newValue in
+                                    if !newValue.isEmpty {
+                                        showAlert = true
+                                    }
+                                }
+                        case .errorAlert:
+                            EmptyView()
+                        }
+                    }
+                    
+                    VStack {
+                        Spacer()
+                        AdView()
+                            .frame(width: 320, height: 50, alignment: .center)
+                    }
+                }
+                .navigationBarTitleDisplayMode(.inline)
+                .navigationBarItems(leading: deleteAccountButton, trailing: signOutButton)
+            }
+        }
+    }
+    
+    var signOutButton: some View {
+        Button(action: {
+            let signOutSuccessful = viewModel.signOut()
+            if !signOutSuccessful {
+                // Handle the error case as needed
+                print("Sign out was not successful.")
+            }
+        }) {
+            Text("Logout")
+                .foregroundColor(.white)
+        }
+    }
+    
+    var deleteAccountButton: some View {
+        Button(action: {
+            viewModel.deleteUser { success in
+                if success {
+                    print("Your account has been successfully deleted.")
+                } else {
+                    print("Error in deleting your account.")
+                }
+            }
+        }) {
+            Text("Delete Account")
+        }
+    }
+}
+
+    
+
+struct PillDetailCardView: View {
+    var pill: Pill
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Text("Dosage: \(pill.dosage) \(pill.dosageUnit)")
+            Text("Times Per Day: \(pill.timesPerDay)")
+            Text("Times: \(pill.times.map { formatTime($0) }.joined(separator: ", "))")
+            Text("Taken with Food: \(pill.isTakenWithFood ? "Yes" : "No")")
+        }
+        .padding()
+        .background(Color.white)
+        .cornerRadius(10)
+        .shadow(radius: 5)
+    }
+    
+    private func formatTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
+
+struct PillListView: View {
+    @EnvironmentObject var viewModel: AuthenticationViewModel
+    @State private var addPillSheet: Bool = false
+    @State private var expandedPillNames: Set<String> = []
+    @State private var printDocument: Bool = false
+
+    var body: some View {
+        List {
+            ForEach(viewModel.userPills, id: \.name) { pill in
+                VStack(alignment: .leading) {
+                    HStack {
+                        Text(pill.name)
+                        Spacer()
+                        Button(action: {
+                            if expandedPillNames.contains(pill.name) {
+                                expandedPillNames.remove(pill.name)
+                            } else {
+                                expandedPillNames.insert(pill.name)
+                            }
+                        }) {
+                            Image(systemName: expandedPillNames.contains(pill.name) ? "chevron.up" : "chevron.down")
+                        }
+                        .foregroundColor(.primary)
+                    }
+                    .contentShape(Rectangle())
+
+                    if expandedPillNames.contains(pill.name) {
+                        PillDetailCardView(pill: pill)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Medication")
+        .navigationBarItems(
+            trailing:
+                HStack {
+                    Button(action: {
+                        printDocument.toggle()
+                    }) {
+                        Text("Print")
+                    }
+
+                    Button(action: {
+                        addPillSheet = true
+                    }) {
+                        Text("Add")
+                    }
+                }
+        )
+        .sheet(isPresented: $addPillSheet) {
+            PillDetailView(pills: $viewModel.userPills)
+                }
+            }
+    }
+    
+
+
+
+struct PrintButton: View {
+    var printContent: String
+
+    var body: some View {
+        Button(action: printAction) {
+            Text("Print")
+        }
+    }
+    
+    private func printAction() {
+        let printInfo = UIPrintInfo(dictionary: nil)
+        printInfo.outputType = .general
+        printInfo.orientation = .portrait
+        printInfo.jobName = "Medication List"
+
+        let printController = UIPrintInteractionController.shared
+        printController.printInfo = printInfo
+
+        let formatter = UIMarkupTextPrintFormatter(markupText: printContent)
+        formatter.perPageContentInsets = UIEdgeInsets(top: 72, left: 72, bottom: 72, right: 72)
+        printController.printFormatter = formatter
+
+        printController.present(animated: true)
+    }
+}
+
+
+
+
+struct PillDetailView: View {
+    @Environment(\.presentationMode) private var presentationMode
+    @Binding var pills: [Pill]
+
+    @State private var pillName: String
+    @State private var newPillDosage: String
+    @State var newPillDosageUnit: String
+    @State private var timesPerDay: Int
+    @State private var selectedTimes: [Date]
+    @State private var isTakenWithFood: Bool
+    @State private var showTimePicker = false
+    
+    var dosageUnits = ["mcg", "mg", "g", "mL"]
+    let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mm a"
+        return formatter
+    }()
+
+    init(pills: Binding<[Pill]>) {
+        _pills = pills
+
+        _pillName = State(initialValue: "")
+        _newPillDosage = State(initialValue: "")
+        _newPillDosageUnit = State(initialValue: "mg")
+        _timesPerDay = State(initialValue: 1)
+        _selectedTimes = State(initialValue: [])
+        _isTakenWithFood = State(initialValue: false)
+    }
+
+
+    var body: some View {
+        NavigationView {
+            Form {
+                TextField("Name", text: $pillName)
+                HStack {
+                     TextField("Dosage", text: $newPillDosage)
+                    Picker(selection: $newPillDosageUnit, label: EmptyView()) {
+                        ForEach(dosageUnits, id: \.self) { unit in
+                            Text(unit).tag(unit)
+                        }
+                     }
+                     .pickerStyle(MenuPickerStyle())
+                 }
+                Stepper("Times Per Day: \(timesPerDay)", value: $timesPerDay, in: 1...10)
+
+                Section(header: Text("Times")) {
+                    ForEach(selectedTimes, id: \.self) { time in
+                        Text(timeFormatter.string(from: time))
+                    }
+                    Button("Add Time") {
+                        showTimePicker = true
+                    }
+                }
+
+                Section(header: Text("Additional Details")) {
+                    Toggle("Taken with Food", isOn: $isTakenWithFood)
+                }
+            }
+            .navigationBarTitle("Medication")
+            .sheet(isPresented: $showTimePicker) {
+                TimePickerView(selectedTimes: $selectedTimes, showTimePicker: $showTimePicker)
+            }
+            .navigationBarItems(trailing: Button("Save", action: savePillInformation))
+        }
+    }
+
+    func savePillInformation() {
+        let pill = Pill(name: pillName, dosage: newPillDosage,dosageUnit: newPillDosageUnit, timesPerDay: timesPerDay, times: selectedTimes, isTakenWithFood: isTakenWithFood)
+        pills.append(pill)
+
+        // Store the pill in Firebase Firestore
+        let db = Firestore.firestore()
+        guard let userID = Auth.auth().currentUser?.uid else { return }
+        let userPillsCollection = db.collection("users").document(userID).collection("pills")
+        do {
+            let pillData = try JSONEncoder().encode(pill)
+            guard let pillJson = String(data: pillData, encoding: .utf8),
+                  let pillDocument = try? pillJson.data(using: .utf8).flatMap({ try JSONSerialization.jsonObject(with: $0, options: []) }) as? [String: Any]
+            else { return }
+            
+            userPillsCollection.addDocument(data: pillDocument) { error in
+                if let error = error {
+                    print("Error saving pill: \(error.localizedDescription)")
+                } else {
+                    print("Pill successfully saved!")
+                }
+            }
+        } catch {
+            print("Error encoding pill: \(error.localizedDescription)")
+        }
+        scheduleNotifications(for: pill)
+        // Reset the form and dismiss the view
+        resetForm()
+        presentationMode.wrappedValue.dismiss()
+    }
+    func scheduleNotifications(for pill: Pill) {
+        let content = UNMutableNotificationContent()
+        content.title = "Medication reminder"
+        content.body = "Time to take \(pill.name)!"
+
+        for time in pill.times {
+            var components = Calendar.current.dateComponents([.hour, .minute], from: time)
+            components.second = 0
+            let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+
+            let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)
+            UNUserNotificationCenter.current().add(request) { error in
+                if let error = error {
+                    print("Failed to schedule notification: \(error)")
+                }
+            }
+        }
+    }
+    func resetForm() {
+        pillName = ""
+        newPillDosage = ""
+        timesPerDay = 1
+        selectedTimes = []
+        isTakenWithFood = false
+    }
+}
+
+struct TimePickerView: View {
+    @Environment(\.presentationMode) private var presentationMode
+    @Binding var selectedTimes: [Date]
+    @Binding var showTimePicker: Bool
+    @State private var selectedTime = Date()
+
+    var body: some View {
+        NavigationView {
+            VStack {
+                DatePicker("Time", selection: $selectedTime, displayedComponents: .hourAndMinute)
+                    .datePickerStyle(WheelDatePickerStyle())
+                    .labelsHidden()
+                    .padding(.horizontal)
+
+                Button("Add Time") {
+                    selectedTimes.append(selectedTime)
+                    presentationMode.wrappedValue.dismiss()
+                }
+                .padding(.vertical)
+            }
+            .navigationBarTitle("Select Time")
+        }
+    }
+}
+
+struct AppointmentListView: View {
+
+    @EnvironmentObject var viewModel: AuthenticationViewModel
+    @State private var showAddAppointmentSheet = false
+
+    var body: some View {
+        List {
+            ForEach(viewModel.userAppointments, id: \.id) { appointment in
+                DisclosureGroup(appointment.title) {
+                    VStack(alignment: .leading) {
+                        Text("With: \(appointment.withWho)")
+                        Text("DateTime: \(appointment.dateTime, formatter: dateTimeFormatter)")
+                        Text("Notification: \(appointment.advanceNotification)")
+
+                        if let recurringPeriod = appointment.recurringPeriod {
+                            Text("This appointment is recurring every \(recurringPeriod)")
+                        }
+                    }
+                    .padding(.leading)
+                }
+            }
+        }
+        .navigationTitle("Appointments")
+        .navigationBarItems(trailing: Button(action: {
+            showAddAppointmentSheet = true
+        }) {
+            Text("Add")
+        })
+        .sheet(isPresented: $showAddAppointmentSheet) {
+            AppointmentDetailView(appointments: $viewModel.userAppointments)
+        }
+    }
+
+    var dateTimeFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }
+}
+
+struct AppointmentDetailView: View {
+    @Environment(\.presentationMode) private var presentationMode
+    @Binding var appointments: [Appointment]
+    
+    @State private var appointmentTitle = ""
+    @State private var appointmentWithWho = ""
+    @State private var appointmentDate = Date()
+    @State private var appointmentTime = Date()
+    @State private var remindToMakeAnother = false
+    @State private var advanceNotification = "15 minutes before"
+    @State private var isRecurring = false
+    @State private var recurringPeriod: String = "1 Week"
+    @State private var futureAppointmentReminderTime = "2 weeks"
+    
+    let notificationTimes = [ "15 minutes before", "30 minutes before", "1 hour before", "1 day before"]
+    let futureAppointmentReminderTimes = ["2 weeks", "1 month", "2 months", "3 months", "6 months", "1 year"]
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                TextField("Title", text: $appointmentTitle)
+                TextField("With Who", text: $appointmentWithWho)
+                DatePicker("Date", selection: $appointmentDate, displayedComponents: .date)
+                DatePicker("Time", selection: $appointmentTime, displayedComponents: .hourAndMinute)
+                Picker("Appointment reminder", selection: $advanceNotification) {
+                    ForEach(notificationTimes, id: \.self) {
+                        Text($0)
+                    }
+                }
+
+                Toggle(isOn: $remindToMakeAnother) {
+                    Text("Would you like to be reminded to make another appointment?")
+                }
+                
+                if remindToMakeAnother {
+                    Picker("Notification to make future appointment", selection: $futureAppointmentReminderTime) {
+                        ForEach(futureAppointmentReminderTimes, id: \.self) {
+                            Text($0)
+                        }
+                    }
+                }
+            }
+            .navigationBarTitle("Appointments")
+            .navigationBarItems(trailing: Button("Save", action: saveAppointmentInformation))
+        }
+    }
+    
+    func saveAppointmentInformation() {
+        // Combine appointment date and time into a single Date object
+        let calendar = Calendar.current
+        let dateComponents = calendar.dateComponents([.year, .month, .day], from: appointmentDate)
+        let timeComponents = calendar.dateComponents([.hour, .minute], from: appointmentTime)
+        var combinedComponents = DateComponents()
+        combinedComponents.year = dateComponents.year
+        combinedComponents.month = dateComponents.month
+        combinedComponents.day = dateComponents.day
+        combinedComponents.hour = timeComponents.hour
+        combinedComponents.minute = timeComponents.minute
+        guard let combinedDate = calendar.date(from: combinedComponents) else { return }
+
+        // Create a Firestore Timestamp from the combined Date
+        let dateTime = Timestamp(date: combinedDate)
+
+            
+        let appointment = Appointment(
+            id: nil,
+            title: appointmentTitle,
+            withWho: appointmentWithWho,
+            dateTime: dateTime.dateValue(),
+            isRecurring: isRecurring,
+            advanceNotification: advanceNotification,
+            recurringPeriod: recurringPeriod,
+            futureAppointmentReminderTime: futureAppointmentReminderTime
+        )
+
+        scheduleNotification(for: appointment)
+        appointments.append(appointment)
+
+        // Store the appointment in Firebase Firestore
+        let db = Firestore.firestore()
+        guard let userID = Auth.auth().currentUser?.uid else { return }
+        let userAppointmentsCollection = db.collection("users").document(userID).collection("appointments")
+
+        do {
+            let appointmentData = try JSONEncoder().encode(appointment)
+            guard let appointmentDictionary = try JSONSerialization.jsonObject(with: appointmentData, options: .allowFragments) as? [String: Any] else {
+                print("Error converting appointmentData to dictionary")
+                return
+            }
+
+            userAppointmentsCollection.addDocument(data: appointmentDictionary) { error in
+                if let error = error {
+                    print("Error saving appointment: \(error.localizedDescription)")
+                } else {
+                    print("Appointment successfully saved!")
+                }
+            }
+        } catch {
+            print("Error encoding appointment: \(error.localizedDescription)")
+        }
+
+        resetForm()
+        presentationMode.wrappedValue.dismiss()
+    }
+
+
+    func scheduleNotification(for appointment: Appointment) {
+        let center = UNUserNotificationCenter.current()
+        
+        let content = UNMutableNotificationContent()
+        content.title = appointment.title
+        content.body = "Your appointment with \(appointment.withWho) is coming up!"
+        content.sound = UNNotificationSound.default
+        
+        var dateComponents = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: appointment.dateTime)
+        switch appointment.advanceNotification {
+        case "15 minutes before":
+            dateComponents.minute? -= 15
+        case "30 minutes before":
+            dateComponents.minute? -= 30
+        case "1 hour before":
+            dateComponents.hour? -= 1
+        case "1 day before":
+            dateComponents.day? -= 1
+        default:
+            break
+        }
+        
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
+        
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)
+        center.add(request)
+    }
+    
+    func scheduleMakeAnotherAppointmentReminder() {
+        let center = UNUserNotificationCenter.current()
+        
+        let content = UNMutableNotificationContent()
+        content.title = "Make another appointment"
+        content.body = "Don't forget to schedule your next appointment!"
+        content.sound = UNNotificationSound.default
+        
+        var timeInterval: TimeInterval = 0
+        
+        switch futureAppointmentReminderTime {
+        case "2 weeks":
+            timeInterval = 1209600 // seconds in 2 weeks
+        case "1 month":
+            timeInterval = 2592000 // seconds in a month (approx)
+        case "2 months":
+            timeInterval = 5184000 // seconds in 2 months (approx)
+        case "3 months":
+            timeInterval = 7776000 // seconds in 3 months (approx)
+        case "6 months":
+            timeInterval = 15552000 // seconds in 6 months (approx)
+        case "1 year":
+            timeInterval = 31104000 // seconds in a year (approx)
+        default:
+            break
+        }
+        
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: timeInterval, repeats: false)
+        
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)
+        center.add(request)
+    }
+    
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+    
+    func resetForm() {
+        appointmentTitle = ""
+        appointmentWithWho = ""
+        appointmentDate = Date()
+        appointmentTime = Date()
+        remindToMakeAnother = false
+        advanceNotification = "15 minutes before"
+    }
+}
+
+
+
+
+
+
+struct ContentView: View {
+    @EnvironmentObject var viewModel: AuthenticationViewModel
+
+    var body: some View {
+        HomeView()
+    }
+}
+
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
+    }
+}
+struct AdView: UIViewRepresentable {
+    func makeUIView(context: Context) -> GADBannerView {
+        let banner = GADBannerView(adSize: GADAdSizeBanner)
+        banner.adUnitID = "ca-app-pub-3940256099942544/2934735716"
+        banner.rootViewController = UIApplication.shared.connectedScenes
+            .filter { $0.activationState == .foregroundActive }
+            .compactMap { $0 as? UIWindowScene }
+            .first?.windows
+            .first(where: { $0.isKeyWindow })?
+            .rootViewController
+        return banner
+    }
+
+    func updateUIView(_ uiView: GADBannerView, context: Context) {
+        // Load the ad in the updateUIView function
+        uiView.load(GADRequest())
+    }
+}
+struct PrintDocumentView: UIViewControllerRepresentable {
+    var printContent: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(printContent: self.printContent)
+    }
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        UIViewController()
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        // code to update the UIViewController if needed
+    }
+
+    class Coordinator: NSObject, UIPrintInteractionControllerDelegate {
+        var printContent: String
+
+        init(printContent: String) {
+            self.printContent = printContent
+        }
+
+        override func willChangeValue(forKey key: String) {
+            let printInfo = UIPrintInfo(dictionary:nil)
+            printInfo.outputType = .general
+            printInfo.jobName = "Print Job"
+
+            let printController = UIPrintInteractionController.shared
+            printController.printInfo = printInfo
+
+            let formatter = UIMarkupTextPrintFormatter(markupText: self.printContent)
+            printController.printFormatter = formatter
+
+            printController.present(animated: true)
+        }
+    }
+}
+struct PrintView: UIViewRepresentable {
+    let printContent: String
+
+    func makeUIView(context: Context) -> UIView {
+        return UIView() // A dummy view
+    }
+    
+    func updateUIView(_ uiView: UIView, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        return Coordinator(printContent: printContent)
+    }
+    
+    class Coordinator: NSObject, UIPrintInteractionControllerDelegate {
+        let printContent: String
+        
+        init(printContent: String) {
+            self.printContent = printContent
+            super.init()
+            printDocument()
+        }
+        
+        private func printDocument() {
+            let printInfo = UIPrintInfo(dictionary: nil)
+            printInfo.outputType = .general
+            printInfo.orientation = .portrait
+            printInfo.jobName = "Medication List"
+
+            let printController = UIPrintInteractionController.shared
+            printController.printInfo = printInfo
+
+            let formatter = UIMarkupTextPrintFormatter(markupText: printContent)
+            formatter.perPageContentInsets = UIEdgeInsets(top: 72, left: 72, bottom: 72, right: 72)
+            printController.printFormatter = formatter
+            
+            printController.present(animated: true)
+        }
+    }
+}
+enum AuthenticationState {
+    case unauthenticated
+    case authenticating
+    case authenticated
+}
+enum LoginError: Error {
+    case nonExistentEmail
+    case incorrectPassword
+    case other(NSError)
+    case unknownError
+}
+
+enum AuthenticationFlow {
+    case login
+    case signUp
+}
+
+@MainActor
+class AuthenticationViewModel : ObservableObject {
+    @Published var didSignOut = false
+    @Published var email: String = ""
+    @Published var password: String = ""
+    @Published var confirmPassword: String = ""
+    @Published var flow: AuthenticationFlow = .login
+    @Published var isValid: Bool = false
+    @Published var authenticationState: AuthenticationState = .unauthenticated
+    @Published var user: User?
+    @Published var errorMessage: String = ""
+    @Published var displayName: String = ""
+    @Published var userPills: [Pill] = []
+    @Published var userAppointments: [Appointment] = []
+    @Published var isRegistered: Bool = false
+    @Published var pills: [Pill] = []
+    @Published var appointments: [Appointment] = []
+    
+    // Initializer
+    init() {
+        if Auth.auth().currentUser != nil {
+            self.authenticationState = .authenticated
+        }
+    }
+    
+    func signInWithEmailPassword() async -> LoginError? {
+        authenticationState = .authenticating
+        do {
+            let authResult = try await Auth.auth().signIn(withEmail: email, password: password)
+            user = authResult.user
+            print("User \(authResult.user.uid) signed in")
+            authenticationState = .authenticated
+            displayName = user?.email ?? "(unknown)"
+            if authenticationState == .authenticated {
+                userPills = await fetchUserPills()
+                userAppointments = await fetchUserAppointments()
+
+            }
+            
+            return nil // no error occurred
+        }
+        catch let error as NSError { // Modified this line
+            print(error)
+            errorMessage = error.localizedDescription
+            authenticationState = .unauthenticated
+            switch error.code {
+            case AuthErrorCode.userNotFound.rawValue:
+                return .nonExistentEmail
+            case AuthErrorCode.wrongPassword.rawValue:
+                return .incorrectPassword
+            default:
+                return .other(error)
+            }
+        }
+        catch {
+            return .unknownError
+        }
+    }
+
+    func signUpWithEmailPassword() async -> Bool {
+        authenticationState = .authenticating
+        do {
+            let authResult = try await Auth.auth().createUser(withEmail: email, password: password)
+            user = authResult.user
+            print("User \(authResult.user.uid) signed in")
+            authenticationState = .authenticated
+            displayName = user?.email ?? "(unknown)"
+  
+            return true
+        } catch {
+            print(error)
+            errorMessage = error.localizedDescription
+            authenticationState = .unauthenticated
+            return false
+        }
+    }
+
+
+    func fetchUserPills() async -> [Pill] {
+        guard let userID = Auth.auth().currentUser?.uid else {
+            print("User not logged in.")
+            return []
+        }
+        let db = Firestore.firestore()
+        let userPillsCollection = db.collection("users").document(userID).collection("pills")
+
+        var pills: [Pill] = []
+        do {
+            let snapshot = try await userPillsCollection.getDocuments()
+            for document in snapshot.documents {
+                let data = document.data()
+                do {
+                    let jsonData = try JSONSerialization.data(withJSONObject: data, options: [])
+                    let pill = try JSONDecoder().decode(Pill.self, from: jsonData)
+                    pills.append(pill)
+                } catch {
+                    print("Error decoding pill: \(error.localizedDescription)")
+                }
+            }
+        } catch {
+            print("Error fetching documents: \(error)")
+        }
+        return pills
+    }
+    func fetchUserAppointments() async -> [Appointment] {
+        guard let userID = Auth.auth().currentUser?.uid else {
+            print("User not logged in.")
+            return []
+        }
+        let db = Firestore.firestore()
+        let userAppointmentsCollection = db.collection("users").document(userID).collection("appointments")
+
+        var appointments: [Appointment] = []
+        do {
+            let snapshot = try await userAppointmentsCollection.getDocuments()
+            for document in snapshot.documents {
+                var data = document.data()
+                data["id"] = document.documentID  // Add the Firestore document ID to the data
+                do {
+                    let jsonData = try JSONSerialization.data(withJSONObject: data, options: [])
+                    let appointment = try JSONDecoder().decode(Appointment.self, from: jsonData)
+                    appointments.append(appointment)
+                } catch {
+                    print("Error decoding appointment: \(error.localizedDescription)")
+                }
+            }
+        } catch {
+            print("Error fetching documents: \(error)")
+        }
+        return appointments
+    }
+
+    func fetchData() async {
+            self.pills = await fetchUserPills()
+            self.appointments = await fetchUserAppointments()
+        }
+    func signOut() -> Bool {
+        do {
+            try Auth.auth().signOut()
+            self.user = nil
+            self.authenticationState = .unauthenticated
+            self.didSignOut = true // Set didSignOut to true on successful sign out
+            return true
+        } catch {
+            print("Error signing out: \(error)")
+            self.didSignOut = false // Optionally, set didSignOut to false on failure
+            return false
+        }
+    }
+    func deleteUser(completion: @escaping (Bool) -> Void) {
+        guard let currentUser = Auth.auth().currentUser else {
+            completion(false)
+            return
+        }
+        
+        currentUser.delete { error in
+            if let error = error {
+                print("Error deleting user:", error.localizedDescription)
+                completion(false)
+            } else {
+                print("User deleted successfully")
+                completion(true)
+            }
+        }
+    }
+
+}
+struct AppView: View {
+    @EnvironmentObject var viewModel: AuthenticationViewModel
+    
+    var body: some View {
+        NavigationView {
+            ZStack {
+                if viewModel.authenticationState == .authenticated {
+                    HomeView()
+                } else {
+                    SignUpView()
+                }
+            }
+        }
+    }
+}
+
