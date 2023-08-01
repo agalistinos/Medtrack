@@ -1,0 +1,223 @@
+//
+//  SignUpView.swift
+//  Medtrack
+//
+//  Created by Andre Galistinos on 6/27/23.
+//
+
+import SwiftUI
+
+struct TermsAndConditionsView: View {
+    @State private var termsAndConditionsText = """
+    // Your terms and conditions here...
+    """
+
+    var body: some View {
+        VStack {
+            Text("Terms and Conditions")
+                .font(.title)
+                .fontWeight(.bold)
+                .padding(.bottom, 20)
+
+            ScrollView {
+                TextEditor(text: $termsAndConditionsText)
+                    .multilineTextAlignment(.leading)
+                    .padding()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .edgesIgnoringSafeArea(.all)
+    }
+}
+
+struct PrivacyPolicyView: View {
+    @State private var privacyPolicyText = """
+    // Your privacy policy here...
+    """
+
+    var body: some View {
+        VStack {
+            Text("Privacy Policy")
+                .font(.title)
+                .fontWeight(.bold)
+                .padding(.bottom, 20)
+
+            ScrollView {
+                TextEditor(text: $privacyPolicyText)
+                    .multilineTextAlignment(.leading)
+                    .padding()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .edgesIgnoringSafeArea(.all)
+    }
+}
+
+struct SignUpView: View {
+    @EnvironmentObject var viewModel: AuthenticationViewModel
+    @Environment(\.dismiss) var dismiss
+
+    @State private var email = ""
+    @State private var password = ""
+    @State private var confirmPassword = ""
+    @State private var agreedToTerms = false
+    @State private var agreedToPrivacyPolicy = false
+    @State private var showTermsAndConditions = false
+    @State private var showPrivacyPolicy = false
+    @State private var showAlert = false
+    @State private var alertMessage = ""
+    @State private var passwordError: String?
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                // Gradient background
+                LinearGradient(gradient: Gradient(colors: [Color.blue, Color.purple]), startPoint: .top, endPoint: .bottom)
+                    .edgesIgnoringSafeArea(.all)
+                VStack {
+                    Text("Welcome!")
+                        .font(.largeTitle)
+                        .fontWeight(.bold)
+                        .padding(.bottom, 15)
+                        .foregroundColor(.white)
+                    Text("Create an Account")
+                        .font(.largeTitle)
+                        .fontWeight(.bold)
+                        .padding(.bottom, 15)
+                        .foregroundColor(.white)
+
+                    TextField("Email", text: $email)
+                        .keyboardType(.emailAddress)
+                        .textContentType(.emailAddress)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .padding(.horizontal, 20)
+                        .frame(height: 40)
+
+                    SecureField("Password", text: $password)
+                        .onChange(of: password, perform: validatePassword)
+                        .textContentType(.password)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .padding(.horizontal, 20)
+                        .frame(height: 40)
+
+                    // Show the password error if one exists
+                    if let error = passwordError {
+                        Text(error)
+                            .foregroundColor(.black)
+                    }
+
+                    SecureField("Confirm Password", text: $confirmPassword)
+                        .textContentType(.password)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .padding(.horizontal, 20)
+                        .frame(height: 40)
+                        .onSubmit {
+                            signUpWithEmailPassword()
+                        }
+
+                    VStack(alignment: .leading) {
+                        Button(action: {
+                            agreedToTerms.toggle()
+                        }) {
+                            HStack {
+                                Image(systemName: agreedToTerms ? "checkmark.square" : "square")
+                                    .foregroundColor(.white)
+                                Text("I agree to the")
+                                    .foregroundColor(.white)
+                                Button(action: {
+                                    self.showTermsAndConditions = true
+                                }) {
+                                    Text("Terms and Conditions")
+                                        .underline()
+                                        .foregroundColor(.white)
+                                }
+                            }
+                        }
+                        .sheet(isPresented: $showTermsAndConditions) {
+                            TermsAndConditionsView()
+                        }
+
+                        Button(action: {
+                            agreedToPrivacyPolicy.toggle()
+                        }) {
+                            HStack {
+                                Image(systemName: agreedToPrivacyPolicy ? "checkmark.square" : "square")
+                                    .foregroundColor(.white)
+                                Text("I agree to the")
+                                    .foregroundColor(.white)
+                                Button(action: {
+                                    self.showPrivacyPolicy = true
+                                }) {
+                                    Text("Privacy Policy")
+                                        .underline()
+                                        .foregroundColor(.white)
+                                }
+                            }
+                        }
+                        .sheet(isPresented: $showPrivacyPolicy) {
+                            PrivacyPolicyView()
+                        }
+                    }
+                    .padding(.horizontal, 20)
+
+                    Button(action: signUpWithEmailPassword) {
+                        Text("Sign Up")
+                            .font(.headline)
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 30)
+                            .padding(.vertical, 10)
+                            .background(.blue)
+                            .cornerRadius(20)
+                            .shadow(color: Color.black.opacity(0.2), radius: 10, x: 0, y: 10)
+                    }
+                    .alert(isPresented: $showAlert) {
+                                            Alert(
+                                                title: Text("Error"),
+                                                message: Text(alertMessage),
+                                                dismissButton: .default(Text("OK"))
+                                                )}
+                }
+                .padding(.top, 40)
+            }
+        }
+    }
+
+    private func validatePassword(_ password: String) {
+        let pattern = "^(?=.*[a-z])(?=.*[$@$#!%*?&])[A-Za-z\\d$@$#!%*?&]{8,}"
+        let predicate = NSPredicate(format: "SELF MATCHES %@", pattern)
+        if predicate.evaluate(with: password) {
+            passwordError = nil
+        } else {
+            passwordError = "Password must be at least 8 characters long, include a number and a special character."
+        }
+    }
+
+    private func signUpWithEmailPassword() {
+        guard password == confirmPassword else {
+            alertMessage = "Passwords do not match."
+            showAlert = true
+            return
+        }
+
+        guard agreedToTerms && agreedToPrivacyPolicy else {
+            alertMessage = "You must read and agree to the terms and conditions and privacy policy in order to proceed."
+            showAlert = true
+            return
+        }
+
+        guard passwordError == nil else {
+            showAlert = true
+            return
+        }
+
+        Task {
+            viewModel.email = email
+            viewModel.password = password
+            viewModel.authenticationState = .authenticated
+            if await viewModel.signUpWithEmailPassword() {
+                dismiss()
+            }
+        }
+    }
+}
