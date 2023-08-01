@@ -1,0 +1,208 @@
+//
+//  LoginView.swift
+//  Medtrack
+//
+//  Created by Andre Galistinos on 6/26/23.
+//
+
+import SwiftUI
+import FirebaseAnalyticsSwift
+import FirebaseAuth
+import UIKit
+
+enum FocusableField: Hashable {
+    case email
+    case password
+}
+
+struct LoginView: View {
+    @EnvironmentObject var viewModel: AuthenticationViewModel
+    @Environment(\.dismiss) var dismiss
+    @FocusState private var focus: FocusableField?
+    @State private var email = ""
+    @State private var password = ""
+    @State private var showForgotPasswordView = false
+    @State private var showSignUpView = false
+    @State private var showPassword = false // Track if the password should be shown
+    @State private var animation = false
+    @State private var signInError = false
+    @State private var signInErrorMessage: String = ""
+    
+    var body: some View {
+        ZStack {
+            LinearGradient(gradient: Gradient(colors: [.blue, .purple]),
+                           startPoint: animation ? .bottom : .top,
+                           endPoint: animation ? .top : .bottom)
+            .ignoresSafeArea() // Extend the gradient to fill the entire view
+            .animation(Animation.easeInOut(duration: 2).repeatForever(autoreverses: true), value: animation)
+            
+            VStack {
+                Spacer(minLength: 50)
+                
+                VStack {
+                    Text("Welcome to MedTrack+")
+                        .font(.largeTitle)
+                        .fontWeight(.heavy)
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                        .padding([.horizontal, .bottom])
+                    
+                    Text("Your Personal Healthcare Tracker")
+                        .font(.headline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                        .padding([.horizontal, .bottom])
+                }
+                
+                TextField("Email", text: $email)
+                    .keyboardType(.emailAddress)
+                    .textContentType(.emailAddress)
+                    .submitLabel(.next)
+                    .focused($focus, equals: .email)
+                    .padding()
+                    .background(Color.white)
+                    .border(Color.black, width: 0.5)
+                    .onSubmit {
+                        focus = .password
+                    }
+                
+                HStack {
+                    if showPassword {
+                        TextField("Password", text: $password)
+                            .textContentType(.password)
+                            .submitLabel(.join)
+                            .focused($focus, equals: .password)
+                    } else {
+                        SecureField("Password", text: $password)
+                            .textContentType(.password)
+                            .submitLabel(.join)
+                            .focused($focus, equals: .password)
+                    }
+                    
+                    Button(action: { showPassword.toggle() }) {
+                        Image(systemName: showPassword ? "eye.fill" : "eye.slash.fill")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding()
+                .background(Color.white)
+                .border(Color.black, width: 0.5)
+                .onSubmit {
+                    signInWithEmailPassword()
+                }
+                
+                Button(action: signInWithEmailPassword) {
+                    Text("Log In")
+                        .foregroundColor(.white)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.blue)
+                        .cornerRadius(10)
+                }
+                .alert(isPresented: $signInError) {
+                    Alert(title: Text("Sign-In Error"), message: Text(signInErrorMessage), dismissButton: .default(Text("OK")))
+                }
+
+                Button(action: { showForgotPasswordView = true }) {
+                    Text("Forgot Password?")
+                        .foregroundColor(.white)
+                        .underline()
+                        .padding(.top, 10)
+                }
+                .sheet(isPresented: $showForgotPasswordView) {
+                    ForgotPasswordView()
+                }
+                
+                Button(action: { showSignUpView = true }) {
+                    HStack {
+                        Text("Don't have an account?")
+                            .foregroundColor(.white)
+                        Text("Sign Up")
+                            .foregroundColor(.white)
+                            .underline()
+                    }
+                    .padding()
+                }
+                .sheet(isPresented: $showSignUpView) {
+                    SignUpView()
+                }
+                
+                Spacer()
+                
+            }
+            .padding()  // Move padding here
+            .onAppear {
+            }
+        }
+        .edgesIgnoringSafeArea(.all)
+    }
+    
+    private func signInWithEmailPassword() {
+           Task {
+               viewModel.email = email
+               viewModel.password = password
+               let loginResult = await viewModel.signInWithEmailPassword()
+               if loginResult != nil {
+                   signInError = true
+                   // Depending on the error type you may want to set different error messages
+                   signInErrorMessage = "Incorrect email or password."
+               } else {
+                   viewModel.authenticationState = .authenticated
+               }
+           }
+       }
+   }
+
+struct ForgotPasswordView: View {
+    @Environment(\.dismiss) var dismiss
+    @State private var email = ""
+    
+    var body: some View {
+        VStack {
+            TextField("Email", text: $email)
+                .keyboardType(.emailAddress)
+                .textContentType(.emailAddress)
+                .submitLabel(.join)
+                .padding()
+                .border(Color.gray, width: 0.5)
+            
+            Button(action: sendPasswordResetEmail) {
+                Text("Reset Password")
+            }
+        }
+        .padding(.horizontal)
+    }
+    
+    private func sendPasswordResetEmail() {
+        let auth = Auth.auth()
+        auth.sendPasswordReset(withEmail: email) { (error) in
+            if let error = error {
+                let alert = Service.createAlertController(title: "Error", message: error.localizedDescription)
+                // Present the alert in UIKit using UIKit's view controller
+                if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let window = scene.windows.first {
+                    window.rootViewController?.present(alert, animated: true, completion: nil)
+                }
+            } else {
+                let alert = Service.createAlertController(title: "Hurray", message: "A password reset email has been sent!")
+                // Present the alert in UIKit using UIKit's view controller
+                if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let window = scene.windows.first {
+                    window.rootViewController?.present(alert, animated: true, completion: nil)
+                }
+            }
+        }
+        dismiss()
+    }
+    
+    // Add the UIKit part
+    class Service {
+        static func createAlertController(title: String, message: String) -> UIAlertController {
+            let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
+            alertController.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
+            return alertController
+        }
+    }
+}
+
